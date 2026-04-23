@@ -9,7 +9,9 @@ const handler = NextAuth({
       authorization: {
         params: {
           scope:
-            "openid email profile https://www.googleapis.com/auth/gmail.readonly",
+            "openid email profile https://www.googleapis.com/auth/gmail.modify",
+          access_type: "offline",
+          prompt: "consent"
         },
       },
     }),

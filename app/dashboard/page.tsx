@@ -33,6 +33,11 @@ export default function Dashboard() {
     spam: 0
   });
   const [heavyEmails, setHeavyEmails] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<"large" | "promotions" | "spam">("large");
+  const [promotionsEmails, setPromotionsEmails] = useState<any[]>([]);
+  const [spamEmails, setSpamEmails] = useState<any[]>([]);
+  const [selectedEmails, setSelectedEmails] = useState<string[]>([]);
+
   const formatSize = (bytes: number) => {
     const mb = bytes / (1024 * 1024);
     if (mb > 1024) {
@@ -40,6 +45,122 @@ export default function Dashboard() {
     }
     return mb.toFixed(2) + " MB";
   };
+
+  const fetchEmailsByQuery = async (query: string) => {
+    if(!session?.accessToken) return [];
+
+    const res = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=30`,
+      {
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+        },
+      }
+    );
+
+    const data = await res.json();
+
+    const detailedEmails = await Promise.all(
+      (data.messages || []).map(async (msg: any) => {
+        const res = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`,
+          {
+            headers: {
+              Authorization: `Bearer ${session?.accessToken}`
+            }
+          }
+        );
+
+        const emailData = await res.json();
+        const headers = emailData.payload.headers;
+
+        const fromRaw = headers.find((h: any) => h.name === "From")?.value || "Unknown";
+        const from = fromRaw.split("<")[0].trim();
+
+        const rawSubject = headers.find(
+          (h: any) => h.name === "Subject"
+        )?.value;
+
+        let subject = rawSubject.trim();
+        if (!subject) subject = `Email from ${from}`;
+
+        const dateRaw =
+          headers.find((h: any) => h.name === "Date")?.value || "";
+
+        const date = new Date(dateRaw).toLocaleDateString();
+
+        const size = emailData.sizeEstimate || 0;
+
+
+        return {
+          id: msg.id,
+          subject,
+          from,
+          date,
+          size
+        };
+      })
+    );
+    return detailedEmails;
+  }
+
+  const toggleSelect = (id: string) => {
+    setSelectedEmails((prev) =>
+      prev.includes(id)
+        ? prev.filter((e) => e !== id)
+        : [...prev, id]
+    );
+  };
+
+  const handleDelete = async () => {  
+    if (!session?.accessToken) return;
+
+    if (selectedEmails.length === 0) {
+      alert("No emails selected");
+      return;
+    }
+
+    const confirmDelete = confirm(
+      `Move ${selectedEmails.length} emails to trash?`
+    );
+
+    if (!confirmDelete) return;
+
+    await Promise.all(
+      selectedEmails.map(async (id) => {
+        const res = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}/trash`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${session.accessToken}`,
+            },
+          }
+        );
+
+        if (!res.ok) {
+          const err = await res.json();
+          console.error(err);
+          throw new Error("Failed to delete");
+        }
+      })
+    );
+
+    alert("Moved to trash successfully!");
+
+    // update UI
+    setHeavyEmails((prev) =>
+      prev.filter((e) => !selectedEmails.includes(e.id))
+    );
+    setPromotionsEmails((prev) =>
+      prev.filter((e) => !selectedEmails.includes(e.id))
+    );
+    setSpamEmails((prev) =>
+      prev.filter((e) => !selectedEmails.includes(e.id))
+    );
+
+    setSelectedEmails([]);
+  }; 
 
   useEffect(() => {
     const fetchLabels = async () => {
@@ -96,101 +217,52 @@ export default function Dashboard() {
   },[session]);
 
   useEffect(() => {
-    const fetchHeavyEmails = async () => {
-      if (!session?.accessToken) return;
+    if (!session?.accessToken) return;
 
-      const res = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(
-          "larger:5M has:attachment older_than:1y -from:me"
-        )}&maxResults=50`,
-        {
-          headers: {
-            Authorization: `Bearer ${session.accessToken}`,
-          },
-        }
+    const fetchAll = async () => {
+
+      //large emails
+      const large = await fetchEmailsByQuery(
+        "larger:5M has:attachment older_than:1y -from:me"
       );
+      setHeavyEmails(large);
 
-      const data = await res.json();
-
-      const detailedEmails = await Promise.all(
-        (data.messages || []).map(async (msg: any) => {
-          const res = await fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`,
-            {
-              headers: {
-                Authorization: `Bearer ${session.accessToken}`
-              }
-            }
-          );
-
-          const emailData = await res.json();
-
-          const headers = emailData.payload.headers;
-
-
-          const fromRaw = headers.find((h: any) => h.name === "From")?.value || "Unknown";
-
-          const from = fromRaw.split("<")[0].trim();
-
-          const rawSubject = headers.find((h: any) => h.name === "Subject")?.value;
-
-          let subject = rawSubject?.trim();
-
-          if (!subject) {
-            subject = `Email from ${from}`;
-          }
-
-          const dateRaw = headers.find((h: any) => h.name === "Date")?.value || "";
-
-          const date = new Date(dateRaw).toLocaleDateString();
-
-          const size = emailData.sizeEstimate || 0;
-          
-          const month = new Date(dateRaw).toLocaleString("default", {
-            month: "short"
-          });
-
-          return {
-            id: msg.id,
-            subject,
-            from,
-            date,
-            size,
-            month
-          };
-        })
+      //promotions
+      const promotions = await fetchEmailsByQuery(
+        "category:promotions"
       );
+      setPromotionsEmails(promotions);
 
-      const total = detailedEmails.reduce(
-        (sum, email) => sum + email.size,
-        0
-      );
+      //spam
+      const spam = await fetchEmailsByQuery(
+        "in:spam"
+      )
+      setSpamEmails(spam);
 
+      const total = large.reduce((sum, email) => sum + email.size, 0);
       setTotalSize(total);
 
-      setHeavyEmails(detailedEmails);
-
+      //bar chart
       const monthlyMap: any = {};
 
-      detailedEmails.forEach((email) => {
-        if (!monthlyMap[email.month]) {
-          monthlyMap[email.month] = 0;
-        }
+      large.forEach((email: any) => {
+        const month = new Date(email.date).toLocaleString("default", {
+          month: "short"
+        });
 
-        monthlyMap[email.month] += email.size;
+        if (!monthlyMap[month]) monthlyMap[month] = 0;
+        monthlyMap[month] += email.size;
       });
 
-      const dynamicBarData = Object.keys(monthlyMap)
-        .sort((a, b) => new Date(`${a} 1, 2024`).getTime() - new Date(`${b} 1, 2024`).getTime())
-        .map((month) => ({
-          month,
-          gb: monthlyMap[month] / (1024 * 1024 * 1024),
-        }));
-      setBarData(dynamicBarData)
-    };
+      const dynamicBarData = Object.keys(monthlyMap).map((month) => ({
+        month,
+        gb: monthlyMap[month] / (1024 * 1024 * 1024),
+      }));
 
-    fetchHeavyEmails();
-  }, [session]);
+      setBarData(dynamicBarData);
+    };
+    fetchAll()
+  }, [session])
 
   const pieData = [
     { name: "Inbox", value: stats.inbox },
@@ -215,6 +287,13 @@ export default function Dashboard() {
       "Updates",
     ].includes(label.id)
   );
+
+  const currentEmails =
+    activeTab === "large"
+      ? heavyEmails
+      : activeTab === "promotions"
+      ? promotionsEmails
+      : spamEmails;
 
 
   return (
@@ -329,22 +408,59 @@ export default function Dashboard() {
         </ul>
       </div>  
 
+      <div className="flex gap-3 mb-6">
+        {["large", "promotions", "spam"].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab as any)}
+            className={`px-4 py-2 rounded-xl ${
+              activeTab === tab
+                ? "bg-white text-black"
+                : "border border-white/10"
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
       {/* HEAVY EMAILS */}
       <div className="bg-white/5 border border-white/10 rounded-3xl p-6">
         <h2 className="text-xl font-semibold mb-6">
-          Large Emails You Can Clean
+          {activeTab === "large"
+            ? "Large Emails You Can Clean"
+            : activeTab === "promotions"
+            ? "Promotions You Can Delete"
+            : "Spam Emails"}
         </h2>
 
-        <div className="space-y-3">
-          {heavyEmails.map((email, index) => (
-            <div
-              key={email.id}
-              className="bg-white/5 border border-white/10 rounded-xl p-5 hover:bg-white/10 transition flex justify-between items-center"
-            >
+        <button
+          onClick={handleDelete}
+          className="mb-4 px-5 py-2 bg-red-500 text-white rounded-xl hover:bg-red-600 transition"
+        >
+          Delete Selected ({selectedEmails.length})
+        </button>
+
+        {currentEmails.map((email, index) => (
+          <div
+            key={email.id}
+            className="bg-white/5 border border-white/10 rounded-xl p-5 hover:bg-white/10 transition flex justify-between items-center"
+          >
+
+            {/* LEFT SIDE */}
+            <div className="flex items-start gap-4">
+
+              {/* ✅ CHECKBOX HERE */}
+              <input
+                type="checkbox"
+                className="mt-2 scale-125"
+                checked={selectedEmails.includes(email.id)}
+                onChange={() => toggleSelect(email.id)}
+              />
+
+              {/* EMAIL INFO */}
               <div>
-                <p className="font-medium">
-                  {email.subject}
-                </p>
+                <p className="font-medium">{email.subject}</p>
 
                 <p className="text-sm text-zinc-400 mt-1">
                   {email.from}
@@ -359,12 +475,15 @@ export default function Dashboard() {
                 </p>
               </div>
 
-              <button className="text-xs border border-white/10 px-3 py-1 rounded-lg hover:bg-white/10 transition">
-                View
-              </button>
             </div>
-          ))}
-        </div>
+
+            {/* RIGHT SIDE */}
+            <button className="text-xs border border-white/10 px-3 py-1 rounded-lg hover:bg-white/10 transition">
+              View
+            </button>
+
+          </div>
+        ))}
       </div>
 
     </div>
