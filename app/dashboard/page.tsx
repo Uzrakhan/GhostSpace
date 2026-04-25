@@ -37,6 +37,9 @@ export default function Dashboard() {
   const [promotionsEmails, setPromotionsEmails] = useState<any[]>([]);
   const [spamEmails, setSpamEmails] = useState<any[]>([]);
   const [selectedEmails, setSelectedEmails] = useState<string[]>([]);
+  const [driveFiles, setDriveFiles] = useState<any[]>([]);
+  const [driveSize, setDriveSize] = useState(0);
+
 
   const formatSize = (bytes: number) => {
     const mb = bytes / (1024 * 1024);
@@ -49,59 +52,99 @@ export default function Dashboard() {
   const fetchEmailsByQuery = async (query: string) => {
     if(!session?.accessToken) return [];
 
+    let allMessages: any[] = [];
+    let pageToken: string | null = null;
+
+    //fetch multiple pages
+    for(let i = 0; i < 3; i++) {
+      const res: Response = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(
+          query
+        )}&maxResults=100&pageToken=${pageToken || ""}`,
+        {
+          headers: {
+            Authorization: `Bearer ${session.accessToken}`,
+          }
+        }
+      );
+
+      const data = await res.json();
+
+      allMessages = [...allMessages, ...(data.messages || [])];
+      pageToken = data.nextPageToken;
+
+      if(!pageToken) break;
+    }
+
+    //fetch details for ALL messages
+    const detailedEmails = (
+      await Promise.all(
+        allMessages.map(async (msg: any) => {
+          const res = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`,
+            {
+              headers: {
+                Authorization: `Bearer ${session.accessToken}`,
+              }
+            }
+          );
+
+          const emailData = await res.json();
+
+          if (!emailData.payload || !emailData.payload.headers) {
+            return null
+          }
+
+          const headers = emailData.payload.headers;
+
+          const fromRaw = headers.find((h: any) => h.name === "From")?.value || "Unknown";
+          const from = fromRaw.split("<")[0].trim();
+
+          const rawSubject = headers.find((h: any) => h.name === "Subject")?.value;
+
+          const subject = rawSubject?.trim() || `Email from ${from}`;
+
+          const dateRaw =
+          headers.find((h: any) => h.name === "Date")?.value || "";
+
+          const date = new Date(dateRaw).toLocaleDateString();
+
+          const size = emailData.sizeEstimate || 0;
+
+          return {
+            id: msg.id,
+            subject,
+            from,
+            date,
+            size,
+          };
+        })
+      )
+    ).filter(Boolean);
+
+    return detailedEmails;
+  }
+
+  const fetchDriveFiles = async () => {
+    if(!session?.accessToken) return;
+
     const res = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=30`,
+      "https://www.googleapis.com/drive/v3/files?pageSize=100&fields=files(id,name,size)",
       {
         headers: {
-          Authorization: `Bearer ${session.accessToken}`,
-        },
+          Authorization: `Bearer ${session.accessToken}`
+        }
       }
     );
 
     const data = await res.json();
 
-    const detailedEmails = await Promise.all(
-      (data.messages || []).map(async (msg: any) => {
-        const res = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`,
-          {
-            headers: {
-              Authorization: `Bearer ${session?.accessToken}`
-            }
-          }
-        );
+    const files = (data.files || []).filter((f: { size: any; }) => f.size);
 
-        const emailData = await res.json();
-        const headers = emailData.payload.headers;
+    const total = files.reduce((sum: number, f: { size: any; }) => sum + Number(f.size), 0);
 
-        const fromRaw = headers.find((h: any) => h.name === "From")?.value || "Unknown";
-        const from = fromRaw.split("<")[0].trim();
-
-        const rawSubject = headers.find(
-          (h: any) => h.name === "Subject"
-        )?.value;
-
-        let subject = rawSubject.trim();
-        if (!subject) subject = `Email from ${from}`;
-
-        const dateRaw =
-          headers.find((h: any) => h.name === "Date")?.value || "";
-
-        const date = new Date(dateRaw).toLocaleDateString();
-
-        const size = emailData.sizeEstimate || 0;
-
-
-        return {
-          id: msg.id,
-          subject,
-          from,
-          date,
-          size
-        };
-      })
-    );
-    return detailedEmails;
+    setDriveFiles(files)
+    setDriveSize(total)
   }
 
   const toggleSelect = (id: string) => {
@@ -223,7 +266,7 @@ export default function Dashboard() {
 
       //large emails
       const large = await fetchEmailsByQuery(
-        "larger:5M has:attachment older_than:1y -from:me"
+        "has:attachment larger:1M"
       );
       setHeavyEmails(large);
 
@@ -239,7 +282,7 @@ export default function Dashboard() {
       )
       setSpamEmails(spam);
 
-      const total = large.reduce((sum, email) => sum + email.size, 0);
+      const total = large.reduce((sum, email) => sum + (email ? email.size : 0), 0);
       setTotalSize(total);
 
       //bar chart
@@ -258,6 +301,8 @@ export default function Dashboard() {
         month,
         gb: monthlyMap[month] / (1024 * 1024 * 1024),
       }));
+
+      await fetchDriveFiles();
 
       setBarData(dynamicBarData);
     };
@@ -295,6 +340,8 @@ export default function Dashboard() {
       ? promotionsEmails
       : spamEmails;
 
+  const sortedEmails = [...heavyEmails].sort((a,b) => b.size - a.size);
+
 
   return (
   <main className="relative min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-white">
@@ -313,8 +360,11 @@ export default function Dashboard() {
         <div>
           <p className="text-zinc-400 text-sm">Dashboard</p>
           <h1 className="text-5xl font-semibold tracking-tight">
-            Gmail Storage Insights
+            Free up {formatSize(totalSize)}
           </h1>
+          <p className="text-zinc-400 mt-2">
+            From {heavyEmails.length} large emails
+          </p>
         </div>
 
         <button className="px-6 py-3 rounded-2xl bg-white text-black font-medium hover:scale-105 transition">
@@ -344,6 +394,31 @@ export default function Dashboard() {
           </div>
         ))}
 
+      </div>
+
+
+      <div className="bg-white/5 border border-white/10 rounded-3xl p-6 mt-12">
+        <h2 className="text-xl font-semibold mb-6">
+          Top Storage Consumers
+        </h2>
+
+        <div className="space-y-4">
+          {sortedEmails.slice(0, 10).map((email) => (
+            <div
+              key={email.id}
+              className="flex justify-between items-center p-4 rounded-xl bg-white/5 hover:bg-white/10 transition"
+            >
+              <div>
+                <p className="font-medium">{email.subject}</p>
+                <p className="text-sm text-zinc-400">{email.from}</p>
+              </div>
+
+              <span className="text-sm font-semibold">
+                {formatSize(email.size)}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* CHARTS */}
@@ -377,6 +452,21 @@ export default function Dashboard() {
           </ResponsiveContainer>
         </div>
 
+      </div>
+
+      {/*GOOGLE DRIVE */}
+      <div className="bg-white/5 border border-white/10 rounded-3xl p-6 mt-12 mb-5">
+        <h2 className="text-xl font-semibold mb-4">
+          Google Drive Usage
+        </h2>
+
+        <p className="text-3xl font-bold">
+          {formatSize(driveSize)}
+        </p>
+
+        <p className="text-zinc-400 mt-2">
+          {driveFiles.length} files detected
+        </p>
       </div>
 
       {/* MAILBOX */}
