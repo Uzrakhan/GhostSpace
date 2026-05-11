@@ -13,7 +13,6 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { motion, AnimatePresence } from "framer-motion";
-import gsap from "gsap";
 import { useRouter } from "next/navigation";
 
 
@@ -57,6 +56,50 @@ function Scanlines() {
   );
 }
 
+
+function GhostSkeleton({
+  className = "",
+  style
+} : {
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <div 
+      style={style}
+      className={`animate-pulse rounded-md bg-white/[0.06] ${className}`}
+    />
+  )
+}
+
+function StatCardSkeleton() {
+  return (
+    <div className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015] ">
+      <GhostSkeleton className="h-2 w-20 mb-4" />
+      <GhostSkeleton className="h-8 w-28" />
+    </div>
+  )
+}
+
+function ChartSkeleton() {
+  return (
+    <div className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015]">
+      <GhostSkeleton className="h-3 w-32 mb-6" />
+
+      <div className="flex items-end gap-3 h-[220px]">
+        {[...Array(7)].map((_, i) => (
+          <GhostSkeleton
+            key={i}
+            className="flex-1 rounded-t-md"
+            style={{
+              height: `${60 + i * 15}px`
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // Grid background
 function GridBg() {
@@ -104,6 +147,10 @@ export default function Dashboard() {
   const [loadingLarge, setLoadingLarge] = useState(true);
   const [loadingPromotions, setLoadingPromotions] = useState(true);
   const [loadingSpam, setLoadingSpam] = useState(true);
+  const [loadingOverview, setLoadingOverview] = useState(true);
+  const [loadingCharts, setLoadingCharts] = useState(true);
+  const [loadingDrive, setLoadingDrive] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [storageQuota, setStorageQuota] = useState({
@@ -432,56 +479,69 @@ export default function Dashboard() {
     fetchCounts()
   },[session]);
 
+  
+  const fetchAll = async () => {
+    setRefreshing(true);
+    queryCache.current.clear();
+    emailCache.current.clear(); 
+    setLoadingLarge(true)
+    setLoadingPromotions(true);
+    setLoadingSpam(true);
+    setLoadingOverview(true)
+    setLoadingCharts(true)
+    setLoadingDrive(true)
+
+    hasFetched.current = false;
+    const [large, promotions, spam] = await Promise.all([
+      fetchEmailsByQuery("has:attachment larger:1M"),
+      fetchEmailsByQuery("category:promotions"),
+      fetchEmailsByQuery("in:spam")
+    ]);
+
+    setHeavyEmails(large);
+    setPromotionsEmails(promotions);
+    setSpamEmails(spam);
+
+    setLoadingLarge(false);
+    setLoadingPromotions(false);
+    setLoadingSpam(false);
+
+    const total = large.reduce((sum, email) => sum + (email ? email.size : 0), 0);
+    setTotalSize(total);
+
+    //bar chart
+    const monthlyMap: any = {};
+
+    large.forEach((email: any) => {
+      const month = new Date(email.date).toLocaleString("default", {
+        month: "short"
+      });
+
+      if (!monthlyMap[month]) monthlyMap[month] = 0;
+      monthlyMap[month] += email.size;
+    });
+
+    const dynamicBarData = Object.keys(monthlyMap).map((month) => ({
+      month,
+      gb: monthlyMap[month] / (1024 * 1024 * 1024),
+    }));
+
+    await fetchDriveFiles();
+    await fetchStorageQuota()
+    setLoadingDrive(false)
+
+    setBarData(dynamicBarData);
+
+    setLoadingCharts(false)
+    setLoadingOverview(false)
+    setRefreshing(false);
+  };
+  
   useEffect(() => {
     if (!session?.accessToken || hasFetched.current) return;
 
     hasFetched.current = true;
 
-    const fetchAll = async () => {
-
-      setLoadingLarge(true)
-      setLoadingPromotions(true);
-      setLoadingSpam(true);
-
-      const [large, promotions, spam] = await Promise.all([
-        fetchEmailsByQuery("has:attachment larger:1M"),
-        fetchEmailsByQuery("category:promotions"),
-        fetchEmailsByQuery("in:spam")
-      ]);
-
-      setHeavyEmails(large);
-      setPromotionsEmails(promotions);
-      setSpamEmails(spam);
-
-      setLoadingLarge(false);
-      setLoadingPromotions(false);
-      setLoadingSpam(false);
-
-      const total = large.reduce((sum, email) => sum + (email ? email.size : 0), 0);
-      setTotalSize(total);
-
-      //bar chart
-      const monthlyMap: any = {};
-
-      large.forEach((email: any) => {
-        const month = new Date(email.date).toLocaleString("default", {
-          month: "short"
-        });
-
-        if (!monthlyMap[month]) monthlyMap[month] = 0;
-        monthlyMap[month] += email.size;
-      });
-
-      const dynamicBarData = Object.keys(monthlyMap).map((month) => ({
-        month,
-        gb: monthlyMap[month] / (1024 * 1024 * 1024),
-      }));
-
-      await fetchDriveFiles();
-      await fetchStorageQuota()
-
-      setBarData(dynamicBarData);
-    };
     fetchAll()
   }, [session])
 
@@ -622,8 +682,12 @@ export default function Dashboard() {
               From {heavyEmails.length} large emails
             </p>
           </div>
-          <button className="gs-mono text-[11px] px-4 py-2 border border-white/10 rounded-md text-zinc-500 hover:border-white/20 hover:text-white/70 transition">
-            ↻ Refresh Scan
+          <button
+              onClick={fetchAll}
+              disabled={refreshing}
+              className="gs-mono text-[11px] px-4 py-2 border border-white/10 rounded-md text-zinc-500 hover:border-white/20 hover:text-white/70 transition disabled:opacity-40"
+            >
+            {refreshing ? "Scanning..." : "↻ Refresh Scan"}
           </button>
         </div>
 
@@ -638,13 +702,21 @@ export default function Dashboard() {
                 Google Storage
               </p>
 
-              <h2 className="gs-syne text-4xl font-bold mt-2">
-                {usedPercentage}% Used
-              </h2>
+              {loadingOverview ? (
+                  <GhostSkeleton className="h-10 w-40 mt-2" />
+              ) : (
+                <h2 className="gs-syne text-4xl font-bold mt-2">
+                  {usedPercentage}% Used
+                </h2>
+              )}
 
-              <p className="gs-mono text-[11px] text-zinc-600 mt-2">
-                {formatSize(totalUsed)} of 15 GB
-              </p>
+              {loadingOverview ? (
+                <GhostSkeleton className="h-3 w-32 mt-3" />
+              ) : (
+                <p className="gs-mono text-[11px] text-zinc-600 mt-2">
+                  {formatSize(totalUsed)} of 15 GB
+                </p>
+              )}
             </div>
 
             <div className="text-right">
@@ -728,69 +800,152 @@ export default function Dashboard() {
 
         {/* ── STATS GRID ── */}
         <div className="grid md:grid-cols-4 gap-3 mb-8">
-          {[
-            { label: "Large Emails",  value: heavyEmails.length },
-            { label: "Spam",          value: stats.spam },
-            { label: "Promotions",    value: stats.promotions },
-            { label: "Recoverable",   value: formatSize(totalSize) },
-          ].map((item, i) => (
-            <motion.div key={i}
-              initial={{ opacity:0, y:16 }} animate={{ opacity:1, y:0 }}
-              transition={{ delay: i * 0.07, duration:0.5, ease:[0.16,1,0.3,1] }}
-              className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015] hover:bg-white/[0.03] transition-colors">
-              <p className="gs-mono text-[10px] text-zinc-600 tracking-[0.2em] uppercase">{item.label}</p>
-              <h2 className="gs-syne text-3xl font-bold mt-3">
-                {typeof item.value === "number" ? item.value.toLocaleString() : item.value}
-              </h2>
-            </motion.div>
-          ))}
+
+          {loadingOverview ? (
+
+            [...Array(4)].map((_, i) => (
+              <StatCardSkeleton key={i} />
+            ))
+
+          ) : (
+
+            [
+              { label: "Large Emails",  value: heavyEmails.length },
+              { label: "Spam",          value: stats.spam },
+              { label: "Promotions",    value: stats.promotions },
+              { label: "Recoverable",   value: formatSize(totalSize) },
+            ].map((item, i) => (
+              <motion.div key={i}
+                initial={{ opacity:0, y:16 }}
+                animate={{ opacity:1, y:0 }}
+                transition={{
+                  delay: i * 0.07,
+                  duration:0.5,
+                  ease:[0.16,1,0.3,1]
+                }}
+                className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015] hover:bg-white/[0.03] transition-colors">
+
+                <p className="gs-mono text-[10px] text-zinc-600 tracking-[0.2em] uppercase">
+                  {item.label}
+                </p>
+
+                <h2 className="gs-syne text-3xl font-bold mt-3">
+                  {typeof item.value === "number"
+                    ? item.value.toLocaleString()
+                    : item.value}
+                </h2>
+
+              </motion.div>
+            ))
+
+          )}
+
         </div>
 
 
         {/**CHARTS */}
         <div className="grid md:grid-cols-2 gap-3 mb-8">
 
-          <div className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015]">
-            <p className="gs-mono text-[10px] text-zinc-600 tracking-[0.2em] uppercase mb-5">
-              Storage Breakdown 
-            </p>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie data={pieData} dataKey="value" outerRadius={80} innerRadius={42} strokeWidth={0}>
-                  {pieData.map((_, index) => (
-                    <Cell key={index} fill={COLORS[index % COLORS.length]} />
+          {loadingCharts ? (
+
+            <>
+              <ChartSkeleton />
+              <ChartSkeleton />
+            </>
+
+          ) : (
+
+            <>
+
+              <div className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015]">
+                <p className="gs-mono text-[10px] text-zinc-600 tracking-[0.2em] uppercase mb-5">
+                  Storage Breakdown 
+                </p>
+
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie
+                      data={pieData}
+                      dataKey="value"
+                      outerRadius={80}
+                      innerRadius={42}
+                      strokeWidth={0}
+                    >
+                      {pieData.map((_, index) => (
+                        <Cell
+                          key={index}
+                          fill={COLORS[index % COLORS.length]}
+                        />
+                      ))}
+                    </Pie>
+
+                    <Tooltip content={<ChartTooltip />} />
+                  </PieChart>
+                </ResponsiveContainer>
+
+                <div className="flex gap-5 mt-2 flex-wrap">
+                  {pieData.map((d, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <div
+                        className="w-2 h-2 rounded-sm"
+                        style={{ backgroundColor: COLORS[i] }}
+                      />
+
+                      <span className="gs-mono text-[10px] text-zinc-500">
+                        {d.name}
+                      </span>
+                    </div>
                   ))}
-                </Pie>
-                <Tooltip content={<ChartTooltip />}/>
-              </PieChart>
-            </ResponsiveContainer>
-
-            {/**legend */}
-            <div className="flex gap-5 mt-2 flex-wrap">
-              {pieData.map((d, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-sm" style={{ backgroundColor: COLORS[i] }}/>
-                  <span className="gs-mono text-[10px] text-zinc-500">
-                    {d.name}
-                  </span>
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
 
-          <div className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015]">
-            <p className="gs-mono text-[10px] text-zinc-600 tracking-[0.2em] uppercase mb-5">
-              Storage Growth
-            </p>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={barData} barCategoryGap="32%">
-                <XAxis dataKey="month" stroke="#333" tick={{ fontSize:10, fontFamily:"DM Mono", fill: "#555" }} axisLine={false} tickLine={false} />
-                <YAxis stroke="#333" tick={{ fontSize:10, fontFamily:"DM Mono", fill:"#555" }} axisLine={false} tickLine={false}/>
-                  <Tooltip content={<ChartTooltip/>}/>
-                  <Bar dataKey="gb" fill="rgba(255,255,255,0.8)" radius={[3,3,0,0]}/>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+              <div className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015]">
+
+                <p className="gs-mono text-[10px] text-zinc-600 tracking-[0.2em] uppercase mb-5">
+                  Storage Growth
+                </p>
+
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={barData} barCategoryGap="32%">
+                    <XAxis
+                      dataKey="month"
+                      stroke="#333"
+                      tick={{
+                        fontSize:10,
+                        fontFamily:"DM Mono",
+                        fill:"#555"
+                      }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+
+                    <YAxis
+                      stroke="#333"
+                      tick={{
+                        fontSize:10,
+                        fontFamily:"DM Mono",
+                        fill:"#555"
+                      }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+
+                    <Tooltip content={<ChartTooltip />} />
+
+                    <Bar
+                      dataKey="gb"
+                      fill="rgba(255,255,255,0.8)"
+                      radius={[3,3,0,0]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+
+              </div>
+
+            </>
+
+          )}
+
         </div>
 
 
