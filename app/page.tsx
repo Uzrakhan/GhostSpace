@@ -247,12 +247,11 @@ export default function Home() {
 
 
             <div className="hero-buttons mt-10 flex gap-4 justify-center flex-wrap">
-              <Link href="/dashboard" className="gs-syne bg-white text-black px-6 py-3 rounded-md text-sm font-bold hover:bg-zinc-200 transition">
+              <Link 
+                href={session ? "/dashboard" : "/api/auth/signin/google"}
+                className="gs-syne bg-white text-black px-6 py-3 rounded-md text-sm font-bold hover:bg-zinc-200 transition"
+              >
                 Analyze Storage
-              </Link>
-              <Link href="/dashboard"
-                className="gs-mono px-6 py-3 rounded-md border border-white/10 text-zinc-500 text-[12px] hover:border-white/20 hover:text-white/70 transition">
-                Live Demo →
               </Link>
             </div>
 
