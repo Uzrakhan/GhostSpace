@@ -153,6 +153,9 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [largestDriveFiles, setLargestDriveFiles] = useState<any[]>([]);
+  const [cleanupCategories, setCleanupCategories] = useState<any[]>([]);
+  const [cleanupCandidates, setCleanupCandidates] = useState<any[]>([])
   const [storageQuota, setStorageQuota] = useState({
     used: 0,
     limit: 0,
@@ -310,7 +313,7 @@ export default function Dashboard() {
     if(!session?.accessToken) return;
 
     const res = await fetch(
-      "https://www.googleapis.com/drive/v3/files?pageSize=100&fields=files(id,name,size)",
+      "https://www.googleapis.com/drive/v3/files?pageSize=100&fields=files(id,name,size,mimeType,createdTime,webViewLink)",
       {
         headers: {
           Authorization: `Bearer ${session.accessToken}`
@@ -325,9 +328,94 @@ export default function Dashboard() {
       (a: { size: any; }, b: { size: any; }) => Number(b.size) - Number(a.size)
     );
 
+    const candidates = sortedFiles.filter((file: any) => {
+      const sizeMB = Number(file.size) / (1024 * 1024);
+
+      const mime = file.mimeType || "";
+
+      const createdYear = new Date(file.createdTime).getFullYear();
+
+      return (
+        sizeMB > 100 ||
+        mime.includes("video") ||
+        mime.includes("zip") ||
+        mime.includes("rar") ||
+        createdYear < 2024
+      )
+    }).slice(0, 12);
+
+    const buildCategory = (
+      title:string,
+      icon:string,
+      files: any[]
+    ) => ({
+      title,
+      icon,
+      files,
+
+      totalSize: files.reduce(
+        (acc: number, file: any) => 
+          acc + Number(file.size || 0),
+        0
+      ),
+    });
+
+    const videoFiles = sortedFiles.filter(
+      (file: any) => 
+        file.mimeType?.includes("video")
+    );
+
+    const archiveFiles = sortedFiles.filter(
+      (file: any) =>
+        file.mimeType?.includes("zip") ||
+        file.mimeType?.includes("rar")
+    );
+
+    const pdfFiles = sortedFiles.filter(
+      (file: any) =>
+        file.mimeType?.includes("pdf")
+    );
+
+    const oldFiles = sortedFiles.filter((file: any) => {
+      const year = new Date(file.createdTime).getFullYear();
+
+      return year < 2024;
+    });
+
+    const categories = [
+      buildCategory(
+        "Large Videos",
+        "🎥",
+        videoFiles
+      ),
+
+      buildCategory(
+        "Archives",
+        "🗜️",
+        archiveFiles
+      ),
+
+      buildCategory(
+        "PDF Documents",
+        "📄",
+        pdfFiles
+      ),
+
+      buildCategory(
+        "Old Files",
+        "🕒",
+        oldFiles
+      ),
+    ];
+
+    const topLargestFiles = sortedFiles.slice(0, 10)
+
     const total = files.reduce((sum: number, f: { size: any; }) => sum + Number(f.size), 0);
 
     setDriveFiles(sortedFiles)
+    setLargestDriveFiles(topLargestFiles)
+    setCleanupCandidates(candidates)
+    setCleanupCategories(categories)
     setDriveSize(total)
   }
 
@@ -636,6 +724,41 @@ export default function Dashboard() {
     100,
     Math.round((totalUsed / totalLimit) * 100)
   );
+
+
+  const getFileIcon = (mime: string) => {
+    if (mime.includes("video")) return "🎥";
+    if (mime.includes("image")) return "🖼️";
+    if (mime.includes("pdf")) return "📄";
+    if (mime.includes("zip")) return "🗜️";
+    return "📁";
+  };
+
+  const getCleanupReason = (file : any) => {
+    const sizeMB = Number(file.size) / (1024 * 1024);
+    const mime = file.mimeType || "";
+    const createdYear = new Date(file.createdTime).getFullYear();
+
+    if(mime.includes("video")) {
+      return "Large video file"
+    }
+
+    if (mime.includes("zip") || mime.includes("rar")) {
+      return "Compressed archive"
+    }
+
+    if (createdYear < 1024) {
+      return "Old unused file"
+    }
+
+    if (sizeMB > 100) {
+      return "Large storage consumer"
+    }
+
+    return "Potential cleanup candidate"
+  };
+
+
   return (
     <main className="relative min-h-screen text-white" style={{  backgroundColor: "#080808"}}>
 
@@ -1017,6 +1140,7 @@ export default function Dashboard() {
                 Largest Drive Files
               </p>
 
+              
               <h2 className="text-2xl font-bold mt-2">
                 Biggest Storage Consumers
               </h2>
@@ -1025,7 +1149,7 @@ export default function Dashboard() {
 
           <div className="space-y-3">
 
-            {driveFiles.slice(0, 10).map((file: any, i: number) => (
+            {largestDriveFiles.slice(0, 10).map((file: any, i: number) => (
 
               <div
                 key={file.id}
@@ -1033,6 +1157,9 @@ export default function Dashboard() {
               >
 
                 <div className="min-w-0">
+                  <span>
+                    {getFileIcon(file.mimeType)}
+                  </span>
                   <p className="text-sm font-medium truncate">
                     {file.name}
                   </p>
@@ -1057,6 +1184,145 @@ export default function Dashboard() {
 
           </div>
         </div>
+
+
+        <div className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015] mb-8">
+
+          <div className="flex items-center justify-between mb-5">
+
+            <div>
+              <p className="text-[10px] text-zinc-600 uppercase tracking-[0.2em]">
+                Cleanup Candidates
+              </p>
+
+              <h2 className="text-2xl font-bold mt-2">
+                Suggested Cleanup Targets
+              </h2>
+            </div>
+
+            <p className="text-sm text-zinc-600">
+              Smart storage recommendations
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            {cleanupCandidates.map((file: any) => (
+              <motion.div
+                key={file.id}
+                initial={{opacity: 0, y: 10}}
+                animate={{opacity:1, y:0}}
+                className="flex items-center justify-between p-4 rounded-xl border border-white/[0.05] bg-white/[0.02] hover:bg-white/[0.03] transition-all"
+              >
+                <div className="min-w-0">
+
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg">
+                      ⚠
+                    </span>
+
+                    <div>
+
+                      <p className="text-sm font-medium truncate max-w-[400px]">
+                        {file.name}
+                      </p>
+
+                      <p className="text-xs text-zinc-500 mt-1">
+                        {getCleanupReason(file)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <p className="text-sm font-semibold">
+                      {formatSize(Number(file.size))}
+                    </p>
+
+                    <p className="text-xs text-zinc-600 mt-1">
+                      Recoverable
+                    </p>
+                  </div>
+
+                  <a 
+                    href={file.webViewLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-2 rounded-lg border border-white/[0.08] text-xs hover:bg-white/[0.05] transition"
+                  >
+                    Review
+                  </a>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border border-white/[0.07] rounded-3xl p-8 bg-white/[0.02] backdrop-blur-xl mb-8">
+
+          <div className="flex items-center justify-between mb-8">
+            <div>
+              <p className="gs-mono text-[10px] uppercase tracking-[0.3em] text-zinc-600 mb-3">
+              Storage Categories
+              </p>
+
+              <h2 className="text-3xl font-semibold tracking-tight">
+                Cleanup Opportunites
+              </h2> 
+            </div>
+            
+          </div>
+
+          <p className="text-zinc-500 text-sm">
+            Organized by file type
+          </p>
+
+          <div className="grid md:grid-cols-2 gap-4 mb-5">
+            {cleanupCategories.map((category: any, i: number) => (
+              <motion.div
+                key={category.title}
+                initial={{opacity:0, y:10}}
+                animate={{opacity:1, y:0}}
+                transition={{ delay: i * 0.06 }}
+                className="border border-white/[0.05] bg-white/[0.015] rounded-2xl p-6 hover:bg-white/[0.03] transition-all"
+              >
+                <div className="flex items-start justify-between">
+
+                  <div>
+                    <div className="flex items-center gap-4">
+                      <span className="text-2xl">
+                        {category.icon}
+                      </span>
+
+                      <div>
+                        <h3 className="text-lg font-medium">
+                          {category.title}
+                        </h3>
+
+                        <p className="text-zinc-500 text-sm mt-1">
+                          {category.files.length} files detected
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-right">
+                    <p className="text-2xl font-semibold">
+                      {formatSize(category.totalSize)}
+                    </p>
+
+                    <p className="text-zinc-600 text-xs mt-1">
+                      Recoverable
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+
+        
+
 
         {/* ── MAILBOX CATEGORIES ── */}
         <div className="border border-white/[0.07] rounded-xl p-6 bg-white/[0.015] mb-8">
