@@ -156,6 +156,7 @@ export default function Dashboard() {
   const [largestDriveFiles, setLargestDriveFiles] = useState<any[]>([]);
   const [cleanupCategories, setCleanupCategories] = useState<any[]>([]);
   const [cleanupCandidates, setCleanupCandidates] = useState<any[]>([])
+  const [duplicateFiles, setDuplicateFiles] = useState<any[]>([]);
   const [storageQuota, setStorageQuota] = useState({
     used: 0,
     limit: 0,
@@ -308,116 +309,7 @@ export default function Dashboard() {
   }
 
   
-
-  const fetchDriveFiles = async () => {
-    if(!session?.accessToken) return;
-
-    const res = await fetch(
-      "https://www.googleapis.com/drive/v3/files?pageSize=100&fields=files(id,name,size,mimeType,createdTime,webViewLink)",
-      {
-        headers: {
-          Authorization: `Bearer ${session.accessToken}`
-        }
-      }
-    );
-
-    const data = await res.json();
-
-    const files = (data.files || []).filter((f: { size: any; }) => f.size);
-    const sortedFiles = files.sort(
-      (a: { size: any; }, b: { size: any; }) => Number(b.size) - Number(a.size)
-    );
-
-    const candidates = sortedFiles.filter((file: any) => {
-      const sizeMB = Number(file.size) / (1024 * 1024);
-
-      const mime = file.mimeType || "";
-
-      const createdYear = new Date(file.createdTime).getFullYear();
-
-      return (
-        sizeMB > 100 ||
-        mime.includes("video") ||
-        mime.includes("zip") ||
-        mime.includes("rar") ||
-        createdYear < 2024
-      )
-    }).slice(0, 12);
-
-    const buildCategory = (
-      title:string,
-      icon:string,
-      files: any[]
-    ) => ({
-      title,
-      icon,
-      files,
-
-      totalSize: files.reduce(
-        (acc: number, file: any) => 
-          acc + Number(file.size || 0),
-        0
-      ),
-    });
-
-    const videoFiles = sortedFiles.filter(
-      (file: any) => 
-        file.mimeType?.includes("video")
-    );
-
-    const archiveFiles = sortedFiles.filter(
-      (file: any) =>
-        file.mimeType?.includes("zip") ||
-        file.mimeType?.includes("rar")
-    );
-
-    const pdfFiles = sortedFiles.filter(
-      (file: any) =>
-        file.mimeType?.includes("pdf")
-    );
-
-    const oldFiles = sortedFiles.filter((file: any) => {
-      const year = new Date(file.createdTime).getFullYear();
-
-      return year < 2024;
-    });
-
-    const categories = [
-      buildCategory(
-        "Large Videos",
-        "🎥",
-        videoFiles
-      ),
-
-      buildCategory(
-        "Archives",
-        "🗜️",
-        archiveFiles
-      ),
-
-      buildCategory(
-        "PDF Documents",
-        "📄",
-        pdfFiles
-      ),
-
-      buildCategory(
-        "Old Files",
-        "🕒",
-        oldFiles
-      ),
-    ];
-
-    const topLargestFiles = sortedFiles.slice(0, 10)
-
-    const total = files.reduce((sum: number, f: { size: any; }) => sum + Number(f.size), 0);
-
-    setDriveFiles(sortedFiles)
-    setLargestDriveFiles(topLargestFiles)
-    setCleanupCandidates(candidates)
-    setCleanupCategories(categories)
-    setDriveSize(total)
-  }
+  
 
   const toggleSelect = (id: string) => {
     setSelectedEmails((prev) =>
@@ -580,6 +472,43 @@ export default function Dashboard() {
     setLoadingDrive(true)
 
     hasFetched.current = false;
+
+    const res = await fetch("/api/dashboard", {
+      method: "GET",
+      headers: {
+        authorization: session?.accessToken || "",
+      },
+    });
+
+    const data = await res.json();
+
+
+    setDriveFiles(data.driveFiles || []);
+
+    setLargestDriveFiles(
+      data.largestDriveFiles || []
+    );
+
+    setCleanupCandidates(
+      data.cleanupCandidates || []
+    );
+
+    setCleanupCategories(
+      data.cleanupCategories || []
+    );
+
+    setDuplicateFiles(
+      data.duplicateFiles || []
+    );
+
+    setDriveSize(
+      data.driveSize || 0
+    );
+
+    console.log(data);
+
+
+
     const [large, promotions, spam] = await Promise.all([
       fetchEmailsByQuery("has:attachment larger:1M"),
       fetchEmailsByQuery("category:promotions"),
@@ -614,7 +543,6 @@ export default function Dashboard() {
       gb: monthlyMap[month] / (1024 * 1024 * 1024),
     }));
 
-    await fetchDriveFiles();
     await fetchStorageQuota()
     setLoadingDrive(false)
 
@@ -1321,6 +1249,90 @@ export default function Dashboard() {
           </div>
         </div>
 
+        
+        {/**DUPLICATES */}
+        <div className="border border-white/[0.07] rounded-3xl p-8 bg-white/[0.02] backdrop-blur-xl mb-8">
+
+          <div className="flex items-center justify-between mb-8">
+            
+            <div>
+              <p className="gs-mono text-[10px] uppercase tracking-[0.3em] text-zinc-600 mb-3">
+                Storage Intelligence
+              </p>
+
+              <h2 className="gs-syne text-3xl font-semibold tracking-tight">
+                Potential Duplicates
+              </h2>
+            </div>
+
+            <p className="text-zinc-500 text-sm">
+              Possible wasted storage
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            {duplicateFiles.length === 0 && (
+              <div className="border border-white/[0.05] bg-white/[0.015] rounded-2xl p-6 text-center">
+                <p className="text-zinc-400">
+                  No obvious duplicates detected.
+                </p>
+              </div>
+            )}
+
+            {duplicateFiles.map((duplicate: any, i: number) => (
+
+              <motion.div
+                key={duplicate.name + i}
+                initial={{opacity:0, y:10}}
+                animate={{opacity:1, y:0}}
+                transition={{delay: i * 0.05}}
+                className="border border-white/[0.05]
+                bg-white/[0.015]
+                rounded-2xl
+                p-5
+                hover:bg-white/[0.03]
+                transition-all"
+              > 
+                <div className="flex items-center justify-between">
+
+                  <div className="min-w-0">
+
+                    <div className="flex items-center gap-3">
+
+                      <span className="text-xl">
+                        🧬
+                      </span>
+                    </div>
+
+                    <div>
+                      <h3 className="font-medium truncate max-w-[400px]">
+                        {duplicate.name}
+                      </h3>
+
+                      <p className="text-zinc-500 text-sm mt-1">
+                        {duplicate.count} matching files detected
+                      </p>
+                    </div>
+                    
+                  </div>
+
+                </div>
+
+                <div className="flex items-center gap-5">
+                  <div className="text-right">
+                    <p className="text-lg font-semibold">
+                      {formatSize(duplicate.wastedSpace)}
+                    </p>
+
+                    <p className="text-zinc-600 text-xs mt-1">
+                      Potential waste
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        </div>
         
 
 
